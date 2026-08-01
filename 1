@@ -323,7 +323,7 @@ export default {
 						.on('body', {
 							element(element) {
 								element.append(`
-									<button id="githubSyncButton" type="button" style="position:fixed;right:20px;bottom:20px;z-index:99999;padding:10px 16px;border:0;border-radius:8px;color:#fff;background:#24292f;box-shadow:0 2px 8px rgba(0,0,0,.25);cursor:pointer;">同步已保存内容到 GitHub</button>
+									<button id="githubSyncButton" type="button" style="position:fixed;right:20px;bottom:20px;z-index:99999;padding:10px 16px;border:0;border-radius:8px;color:#fff;background:#24292f;box-shadow:0 2px 8px rgba(0,0,0,.25);cursor:pointer;">同步优选列表到 GitHub</button>
 									<script>
 										(function () {
 											const button = document.getElementById('githubSyncButton');
@@ -341,7 +341,7 @@ export default {
 													alert(error.message || '同步失败');
 												} finally {
 													button.disabled = false;
-													button.textContent = '同步已保存内容到 GitHub';
+													button.textContent = '同步优选列表到 GitHub';
 												}
 											});
 										})();
@@ -4634,8 +4634,9 @@ async function 写入GitHub文件(env, text) {
 		throw new Error(`读取 GitHub 文件失败 (${checkResponse.status}): ${errorText}`);
 	}
 
+	const commitTime = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
 	const uploadData = {
-		message: `Update ${path} from Cloudflare Worker`,
+		message: `Update from Worker - ${commitTime}`,
 		content: 文本转GitHubBase64(text),
 		branch
 	};
