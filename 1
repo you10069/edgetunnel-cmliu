@@ -283,6 +283,18 @@ export default {
 								console.error('保存自定义IP失败:', error);
 								return new Response(JSON.stringify({ error: '保存自定义IP失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 							}
+						} else if (访问路径 === 'admin/github-sync') { // 手动将 KV 中的优选IP同步到 GitHub
+							try {
+								const customIPs = await env.KV.get('ADD.txt');
+								if (!customIPs) return new Response(JSON.stringify({ error: 'KV 中没有可同步的 ADD.txt' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+
+								await 写入GitHub文件(env, customIPs);
+								ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Sync_Custom_IPs_To_GitHub', config_JSON));
+								return new Response(JSON.stringify({ success: true, message: '已同步到 GitHub' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+							} catch (error) {
+								console.error('GitHub 同步失败:', error);
+								return new Response(JSON.stringify({ error: 'GitHub 同步失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+							}
 						} else return new Response(JSON.stringify({ error: '不支持的POST请求路径' }), { status: 404, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 					} else if (访问路径 === 'admin/config.json') {// 处理 admin/config.json 请求，返回JSON
 						return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -306,6 +318,35 @@ export default {
 							element(element) {
 								element.removeAttribute('readonly');
 								element.setAttribute('oninput', "markModified('proxy')");
+							}
+						})
+						.on('body', {
+							element(element) {
+								element.append(`
+									<button id="githubSyncButton" type="button" style="position:fixed;right:20px;bottom:20px;z-index:99999;padding:10px 16px;border:0;border-radius:8px;color:#fff;background:#24292f;box-shadow:0 2px 8px rgba(0,0,0,.25);cursor:pointer;">同步已保存内容到 GitHub</button>
+									<script>
+										(function () {
+											const button = document.getElementById('githubSyncButton');
+											if (!button) return;
+											button.addEventListener('click', async function () {
+												if (!confirm('确定把 KV 中已保存的 ADD.txt 同步到 GitHub 吗？')) return;
+												button.disabled = true;
+												button.textContent = '正在同步...';
+												try {
+													const response = await fetch('/admin/github-sync', { method: 'POST' });
+													const result = await response.json();
+													if (!response.ok) throw new Error(result.error || '同步失败');
+													alert(result.message || '已同步到 GitHub');
+												} catch (error) {
+													alert(error.message || '同步失败');
+												} finally {
+													button.disabled = false;
+													button.textContent = '同步已保存内容到 GitHub';
+												}
+											});
+										})();
+									</script>
+								`, { html: true });
 							}
 						})
 						.transform(页面响应);
@@ -4558,6 +4599,60 @@ async function sstpConnect(proxy, targetHost, targetPort, TCP连接) {
 	}
 }
 //////////////////////////////////////////////////功能性函数///////////////////////////////////////////////
+function 文本转GitHubBase64(text) {
+	const bytes = new TextEncoder().encode(text);
+	let binary = '';
+	const chunkSize = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunkSize) binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+	return btoa(binary);
+}
+
+async function 写入GitHub文件(env, text) {
+	const owner = env.GITHUB_OWNER;
+	const repo = env.GITHUB_REPO;
+	const branch = env.GITHUB_BRANCH || 'main';
+	const path = (env.GITHUB_PATH || 'cf-add-ips.txt').replace(/^\/+/, '');
+	const token = env.GITHUB_TOKEN;
+	if (!owner || !repo || !path || !token) throw new Error('GitHub 环境变量配置不完整');
+
+	const encodedPath = path.split('/').map(segment => encodeURIComponent(segment)).join('/');
+	const apiURL = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}`;
+	const headers = {
+		'Accept': 'application/vnd.github+json',
+		'Authorization': `Bearer ${token}`,
+		'X-GitHub-Api-Version': '2026-03-10',
+		'User-Agent': 'Cloudflare-Worker-GitHub-Sync'
+	};
+
+	const checkResponse = await fetch(`${apiURL}?ref=${encodeURIComponent(branch)}`, { headers });
+	let sha;
+	if (checkResponse.ok) {
+		const currentFile = await checkResponse.json();
+		sha = currentFile.sha;
+	} else if (checkResponse.status !== 404) {
+		const errorText = await checkResponse.text();
+		throw new Error(`读取 GitHub 文件失败 (${checkResponse.status}): ${errorText}`);
+	}
+
+	const uploadData = {
+		message: `Update ${path} from Cloudflare Worker`,
+		content: 文本转GitHubBase64(text),
+		branch
+	};
+	if (sha) uploadData.sha = sha;
+
+	const uploadResponse = await fetch(apiURL, {
+		method: 'PUT',
+		headers: { ...headers, 'Content-Type': 'application/json' },
+		body: JSON.stringify(uploadData)
+	});
+	if (!uploadResponse.ok) {
+		const errorText = await uploadResponse.text();
+		throw new Error(`写入 GitHub 文件失败 (${uploadResponse.status}): ${errorText}`);
+	}
+	return uploadResponse.json();
+}
+
 /**
  * 带秘钥的 Base64 编码
  * @param {string} plaintext - 原始明文字符串
